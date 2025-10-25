@@ -30,13 +30,10 @@ export async function logout() {
 }
 
 export type User = {
-  _id: string;
+  id: string;
   firstName: string;
   lastName: string;
   email: string;
-  role: 'admin' | 'user';
-  phone: string;
-  profilePic: string;
 };
 export async function getCurrentUser(): Promise<User> {
   try {
