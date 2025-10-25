@@ -19,11 +19,17 @@ export default function ChatList({ socket, onSelectChat }: ChatListProps) {
   useEffect(() => {
     if (!socket) return;
 
-    socket.on('online_users', (users: User[]) => {
+    const handleOnlineUsers = (users: User[]) => {
       console.log('Online users received:', users);
       setOnlineUsers(users);
-    });
-    return () => socket.off('online_users');
+    };
+
+    socket.on('online_users', handleOnlineUsers);
+
+    // Cleanup
+    return () => {
+      socket.off('online_users', handleOnlineUsers); // make sure to remove the same handler
+    };
   }, [socket]);
 
   const unifiedList = useMemo(() => {
