@@ -1,12 +1,17 @@
 import apiClient from '@/utils/apiClient';
 import { handleApiError } from '@/utils/handleApiError';
-import { ChatItem } from '../types/Chat';
+import { ChatPreview } from '@/app/components/ChatList';
 
-export async function getChat(): Promise<ChatItem[]> {
+export async function getChat(): Promise<ChatPreview[]> {
   try {
     const res = await apiClient.get('chat');
-    return res.data.data as ChatItem[];
+
+    // The backend returns { data: [...], success: true }
+    const chats = res.data.data;
+
+    return chats as ChatPreview[];
   } catch (error) {
+    console.error('❌ Error fetching chats:', error);
     handleApiError(error);
   }
 }
