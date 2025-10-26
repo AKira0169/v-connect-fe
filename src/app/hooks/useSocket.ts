@@ -11,7 +11,7 @@ export const useSocket = () => {
     // Create the socket outside the state setter to avoid "setState in effect" warning
     const socketInstance = io(
       process.env.NEXT_PUBLIC_API_URL || 'https://api.yourdomain.com',
-      { transports: ['websocket'] },
+      { withCredentials: true, transports: ['websocket'] },
     );
 
     socketRef.current = socketInstance;
