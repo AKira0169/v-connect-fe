@@ -1,9 +1,9 @@
 'use client';
 
 import { useEffect, useState, useRef, useMemo } from 'react';
-import { useSocket } from '../hooks/useSocket';
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import apiClient from '@/utils/apiClient';
+import { connectSocket, disconnectSocket } from '../socket';
+import type { Socket } from 'socket.io-client';
 
 type User = {
   id: string;
@@ -27,97 +27,91 @@ type Chat = {
   unreadCount?: number;
 };
 
-// ✅ API helpers
-const fetchCurrentUser = async (): Promise<User> => {
-  const { data } = await apiClient.get('/user/me', { withCredentials: true });
-  return data.data;
-};
-
-const fetchChats = async (): Promise<Chat[]> => {
-  const { data } = await apiClient.get('/chats', { withCredentials: true });
-  return data.data;
-};
-
-const fetchMessages = async (chatId: string): Promise<Message[]> => {
-  const { data } = await apiClient.get(`/messages/${chatId}`, {
-    withCredentials: true,
-  });
-  return data.data || [];
-};
-
 export default function ChatPage() {
-  const { socket } = useSocket(); // ✅ socket initialized with cookies
-  const queryClient = useQueryClient();
-
+  const [socket, setSocket] = useState<Socket | null>(null);
+  const [me, setMe] = useState<User | null>(null);
+  const [chats, setChats] = useState<Chat[]>([]);
+  const [messages, setMessages] = useState<Message[]>([]);
   const [selectedChatId, setSelectedChatId] = useState<string | null>(null);
   const [messageInput, setMessageInput] = useState('');
+  const [loadingChats, setLoadingChats] = useState(true);
+  const [loadingMessages, setLoadingMessages] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
 
-  // 🟢 Fetch current user
-  const { data: me, isLoading: meLoading } = useQuery({
-    queryKey: ['me'],
-    queryFn: fetchCurrentUser,
-  });
+  // 🟢 Connect socket
+  useEffect(() => {
+    const sock = connectSocket();
+    setSocket(sock);
+    return () => disconnectSocket();
+  }, []);
 
-  // 🟢 Fetch chats
-  const { data: chats = [], isLoading: chatsLoading } = useQuery<Chat[]>({
-    queryKey: ['chats'],
-    queryFn: fetchChats,
-    enabled: !!me,
-  });
+  // 🧩 Fetch user + chats on mount
+  useEffect(() => {
+    const fetchUserAndChats = async () => {
+      try {
+        const userRes = await apiClient.get('/user/me', {
+          withCredentials: true,
+        });
+        setMe(userRes.data.data);
 
-  // 🟢 Fetch messages
-  const {
-    data: messages = [],
-    isLoading: messagesLoading,
-    isError: messagesError,
-  } = useQuery<Message[]>({
-    queryKey: ['messages', selectedChatId],
-    queryFn: () => fetchMessages(selectedChatId!),
-    enabled: !!selectedChatId && !!me,
-  });
+        const chatsRes = await apiClient.get('/chats', {
+          withCredentials: true,
+        });
+        setChats(chatsRes.data.data);
+      } catch (err) {
+        console.error('❌ Failed to load user/chats', err);
+      } finally {
+        setLoadingChats(false);
+      }
+    };
+    fetchUserAndChats();
+  }, []);
+
+  // 🧩 Fetch messages when selecting a chat
+  useEffect(() => {
+    if (!selectedChatId) return;
+    const fetchMessages = async () => {
+      setLoadingMessages(true);
+      try {
+        const res = await apiClient.get(`/messages/${selectedChatId}`, {
+          withCredentials: true,
+        });
+        setMessages(res.data.data || []);
+        setTimeout(() => {
+          messagesEndRef.current?.scrollIntoView({ behavior: 'auto' });
+        }, 50);
+      } catch (err) {
+        console.error('❌ Failed to load messages', err);
+      } finally {
+        setLoadingMessages(false);
+      }
+    };
+    fetchMessages();
+
+    socket?.emit('join_chat', { chatId: selectedChatId });
+  }, [selectedChatId, socket]);
 
   // ✅ Sort messages oldest → newest
   const sortedMessages = useMemo(() => {
-    if (!messages) return [];
     return [...messages].sort(
       (a, b) =>
         new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
     );
   }, [messages]);
 
-  // ✅ Get receiver ID
-  const getReceiverId = (chatId: string) => {
-    const chat = chats.find((c) => c.id === chatId);
-    if (!chat || !me) return '';
-    return chat.participants.find((p) => p.id !== me.id)?.id || '';
-  };
-
-  // 🟢 Send message
-  const sendMessageMutation = useMutation({
-    mutationFn: async (content: string) => {
-      if (!selectedChatId || !me) return;
-      const receiverId = getReceiverId(selectedChatId);
-      if (!receiverId) return console.warn('No receiver found');
-      socket?.emit('send_message', { receiverId, content });
-    },
-    onSuccess: () => setMessageInput(''),
-  });
-
   // 🧩 Listen for new messages
   useEffect(() => {
     if (!socket) return;
 
     const handleNewMessage = (message: Message) => {
-      queryClient.setQueryData<Message[]>(
-        ['messages', message.chatId],
-        (old = []) => {
-          if (old.some((m) => m.id === message.id)) return old;
-          return [...old, message];
-        },
-      );
+      console.log('🔥 new_message received instantly', message);
 
-      queryClient.setQueryData<Chat[]>(['chats'], (old = []) =>
+      setMessages((old) => {
+        if (old.some((m) => m.id === message.id)) return old;
+        return [...old, message];
+      });
+
+      setChats((old) =>
         old.map((chat) =>
           chat.id === message.chatId ? { ...chat, lastMessage: message } : chat,
         ),
@@ -131,29 +125,35 @@ export default function ChatPage() {
     };
 
     socket.on('new_message', handleNewMessage);
-    return () => {
-      socket.off('new_message', handleNewMessage);
-    };
-  }, [socket, queryClient, selectedChatId]);
-
-  // 🧩 Join selected chat room
-  useEffect(() => {
-    if (socket && selectedChatId) {
-      socket.emit('join_chat', { chatId: selectedChatId });
-      setTimeout(() => {
-        messagesEndRef.current?.scrollIntoView({ behavior: 'auto' });
-      }, 100);
-    }
+    return () => socket.off('new_message', handleNewMessage);
   }, [socket, selectedChatId]);
 
-  // 🧹 Scroll to bottom on update
+  // ✅ Get receiver ID
+  const getReceiverId = (chatId: string) => {
+    const chat = chats.find((c) => c.id === chatId);
+    if (!chat || !me) return '';
+    return chat.participants.find((p) => p.id !== me.id)?.id || '';
+  };
+
+  // 🧩 Send message
+  const handleSendMessage = async () => {
+    if (!selectedChatId || !me || !messageInput.trim()) return;
+    const receiverId = getReceiverId(selectedChatId);
+    if (!receiverId) return console.warn('No receiver found');
+    socket?.emit('send_message', { receiverId, content: messageInput.trim() });
+    setMessageInput('');
+  };
+
+  // 🧹 Scroll to bottom when messages update
   useEffect(() => {
     if (selectedChatId) {
-      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+      setTimeout(() => {
+        messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+      }, 50);
     }
   }, [sortedMessages.length, selectedChatId]);
 
-  if (meLoading || chatsLoading)
+  if (loadingChats)
     return <div className="p-6 text-white">Loading chats...</div>;
 
   return (
@@ -203,10 +203,8 @@ export default function ChatPage() {
           <>
             {/* 🧩 Messages */}
             <div className="flex flex-1 flex-col space-y-3 overflow-y-auto bg-[#161717] p-4">
-              {messagesLoading ? (
+              {loadingMessages ? (
                 <div className="text-white">Loading messages...</div>
-              ) : messagesError ? (
-                <div className="text-red-500">Failed to load messages.</div>
               ) : sortedMessages.length === 0 ? (
                 <div className="text-gray-400">No messages yet</div>
               ) : (
@@ -253,18 +251,13 @@ export default function ChatPage() {
                 value={messageInput}
                 onChange={(e) => setMessageInput(e.target.value)}
                 onKeyDown={(e) => {
-                  if (e.key === 'Enter' && messageInput.trim()) {
-                    sendMessageMutation.mutate(messageInput.trim());
-                  }
+                  if (e.key === 'Enter' && messageInput.trim())
+                    handleSendMessage();
                 }}
               />
               <button
                 className="ml-3 rounded bg-blue-500 px-4 py-2 text-white hover:bg-blue-600"
-                onClick={() => {
-                  if (messageInput.trim()) {
-                    sendMessageMutation.mutate(messageInput.trim());
-                  }
-                }}
+                onClick={handleSendMessage}
               >
                 Send
               </button>
