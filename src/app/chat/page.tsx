@@ -67,9 +67,19 @@ export default function ChatPage() {
     fetchUserAndChats();
   }, []);
 
-  // 🧩 Fetch messages when selecting a chat
+  // 🧩 Auto-join all chats once
   useEffect(() => {
-    if (!selectedChatId) return;
+    if (!socket || chats.length === 0) return;
+    chats.forEach((c) => socket.emit('join_chat', { chatId: c.id }));
+  }, [socket, chats]);
+
+  // 🧩 Fetch messages when selecting a chat + mark as read
+  useEffect(() => {
+    if (!selectedChatId || !socket) return;
+
+    socket.emit('join_chat', { chatId: selectedChatId });
+    socket.emit('mark_read', { chatId: selectedChatId });
+
     const fetchMessages = async () => {
       setLoadingMessages(true);
       try {
@@ -86,18 +96,19 @@ export default function ChatPage() {
         setLoadingMessages(false);
       }
     };
-    fetchMessages();
 
-    socket?.emit('join_chat', { chatId: selectedChatId });
+    fetchMessages();
   }, [selectedChatId, socket]);
 
   // ✅ Sort messages oldest → newest
-  const sortedMessages = useMemo(() => {
-    return [...messages].sort(
-      (a, b) =>
-        new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
-    );
-  }, [messages]);
+  const sortedMessages = useMemo(
+    () =>
+      [...messages].sort(
+        (a, b) =>
+          new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
+      ),
+    [messages],
+  );
 
   // 🧩 Listen for new messages
   useEffect(() => {
@@ -128,6 +139,33 @@ export default function ChatPage() {
     return () => socket.off('new_message', handleNewMessage);
   }, [socket, selectedChatId]);
 
+  // 🧩 Listen for messages_read to update unread counts
+  useEffect(() => {
+    if (!socket || !me) return;
+
+    const handleMessagesRead = ({
+      chatId,
+      userId,
+    }: {
+      chatId: string;
+      userId: string;
+    }) => {
+      setChats((prev) =>
+        prev.map((chat) =>
+          chat.id === chatId
+            ? {
+                ...chat,
+                unreadCount: userId === me.id ? 0 : (chat.unreadCount ?? 0),
+              }
+            : chat,
+        ),
+      );
+    };
+
+    socket.on('messages_read', handleMessagesRead);
+    return () => socket.off('messages_read', handleMessagesRead);
+  }, [socket, me]);
+
   // ✅ Get receiver ID
   const getReceiverId = (chatId: string) => {
     const chat = chats.find((c) => c.id === chatId);
@@ -136,22 +174,13 @@ export default function ChatPage() {
   };
 
   // 🧩 Send message
-  const handleSendMessage = async () => {
+  const handleSendMessage = () => {
     if (!selectedChatId || !me || !messageInput.trim()) return;
     const receiverId = getReceiverId(selectedChatId);
     if (!receiverId) return console.warn('No receiver found');
     socket?.emit('send_message', { receiverId, content: messageInput.trim() });
     setMessageInput('');
   };
-
-  // 🧹 Scroll to bottom when messages update
-  useEffect(() => {
-    if (selectedChatId) {
-      setTimeout(() => {
-        messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-      }, 50);
-    }
-  }, [sortedMessages.length, selectedChatId]);
 
   if (loadingChats)
     return <div className="p-6 text-white">Loading chats...</div>;
