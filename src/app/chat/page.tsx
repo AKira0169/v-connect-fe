@@ -98,8 +98,6 @@ export default function ChatPage() {
 
     const fetchMessages = async () => {
       setLoadingMessages(true);
-      const selectedChat = chats.find((c) => c.id === selectedChatId);
-      setInsights(selectedChat?.aiInsights || null);
 
       try {
         const res = await apiClient.get(`/messages/${selectedChatId}`, {
@@ -119,7 +117,16 @@ export default function ChatPage() {
 
     fetchMessages();
     setShowSidebar(false);
-  }, [selectedChatId, socket, chats]);
+  }, [selectedChatId, socket]);
+
+  // Sync insights when chats update
+  useEffect(() => {
+    if (!selectedChatId) return;
+    const selectedChat = chats.find((c) => c.id === selectedChatId);
+    if (selectedChat?.aiInsights) {
+      setInsights(selectedChat.aiInsights);
+    }
+  }, [chats, selectedChatId]);
 
   const sortedMessages = useMemo(
     () =>
