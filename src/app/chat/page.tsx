@@ -54,7 +54,9 @@ export default function ChatPage() {
   useEffect(() => {
     const sock = connectSocket();
     setSocket(sock);
-    return () => disconnectSocket();
+    return () => {
+      disconnectSocket();
+    };
   }, []);
 
   useEffect(() => {
@@ -117,7 +119,7 @@ export default function ChatPage() {
 
     fetchMessages();
     setShowSidebar(false);
-  }, [selectedChatId, socket]);
+  }, [selectedChatId, socket, chats]);
 
   const sortedMessages = useMemo(
     () =>
@@ -148,7 +150,9 @@ export default function ChatPage() {
     };
 
     socket.on('new_message', handleNewMessage);
-    return () => socket.off('new_message', handleNewMessage);
+    return () => {
+      socket.off('new_message', handleNewMessage);
+    };
   }, [socket, selectedChatId]);
 
   useEffect(() => {
@@ -174,7 +178,9 @@ export default function ChatPage() {
     };
 
     socket.on('messages_read', handleMessagesRead);
-    return () => socket.off('messages_read', handleMessagesRead);
+    return () => {
+      socket.off('messages_read', handleMessagesRead);
+    };
   }, [socket, me]);
 
   const getReceiverId = (chatId: string) => {
