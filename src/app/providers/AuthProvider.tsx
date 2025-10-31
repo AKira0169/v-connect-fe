@@ -8,7 +8,7 @@ type AuthProviderProps = {
   children: ReactNode;
 };
 
-const publicRoutes = ['/login'];
+const publicRoutes = ['/login', '/signup'];
 
 export function AuthProvider({ children }: AuthProviderProps) {
   const router = useRouter();
