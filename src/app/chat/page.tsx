@@ -22,7 +22,7 @@ type Message = {
 
 type Chat = {
   id: string;
-  participants: User[];
+  participants?: User[];
   lastMessage?: Message;
   unreadCount?: number;
 };
@@ -36,16 +36,21 @@ export default function ChatPage() {
   const [messageInput, setMessageInput] = useState('');
   const [loadingChats, setLoadingChats] = useState(true);
   const [loadingMessages, setLoadingMessages] = useState(false);
+  const [searchTerm, setSearchTerm] = useState('');
+  const [searchResults, setSearchResults] = useState<User[]>([]);
+  const [searching, setSearching] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement | null>(null);
 
   // 🟢 Connect socket
   useEffect(() => {
     const sock = connectSocket();
     setSocket(sock);
-    return () => disconnectSocket();
+    return () => {
+      disconnectSocket();
+    };
   }, []);
 
-  // 🧩 Fetch user + chats on mount
+  // 🧩 Fetch user + chats
   useEffect(() => {
     const fetchUserAndChats = async () => {
       try {
@@ -57,7 +62,8 @@ export default function ChatPage() {
         const chatsRes = await apiClient.get('/chats', {
           withCredentials: true,
         });
-        setChats(chatsRes.data.data);
+        const data = chatsRes.data.data;
+        setChats(Array.isArray(data) ? data : []);
       } catch (err) {
         console.error('❌ Failed to load user/chats', err);
       } finally {
@@ -67,13 +73,13 @@ export default function ChatPage() {
     fetchUserAndChats();
   }, []);
 
-  // 🧩 Auto-join all chats once
+  // 🧩 Auto-join all chats
   useEffect(() => {
-    if (!socket || chats.length === 0) return;
+    if (!socket || !Array.isArray(chats) || chats.length === 0) return;
     chats.forEach((c) => socket.emit('join_chat', { chatId: c.id }));
   }, [socket, chats]);
 
-  // 🧩 Fetch messages when selecting a chat + mark as read
+  // 🧩 Fetch messages on chat select
   useEffect(() => {
     if (!selectedChatId || !socket) return;
 
@@ -86,10 +92,12 @@ export default function ChatPage() {
         const res = await apiClient.get(`/messages/${selectedChatId}`, {
           withCredentials: true,
         });
-        setMessages(res.data.data || []);
-        setTimeout(() => {
-          messagesEndRef.current?.scrollIntoView({ behavior: 'auto' });
-        }, 50);
+        const msgs = res.data.data;
+        setMessages(Array.isArray(msgs) ? msgs : []);
+        setTimeout(
+          () => messagesEndRef.current?.scrollIntoView({ behavior: 'auto' }),
+          50,
+        );
       } catch (err) {
         console.error('❌ Failed to load messages', err);
       } finally {
@@ -115,8 +123,6 @@ export default function ChatPage() {
     if (!socket) return;
 
     const handleNewMessage = (message: Message) => {
-      console.log('🔥 new_message received instantly', message);
-
       setMessages((old) => {
         if (old.some((m) => m.id === message.id)) return old;
         return [...old, message];
@@ -128,18 +134,20 @@ export default function ChatPage() {
         ),
       );
 
-      if (message.chatId === selectedChatId) {
-        setTimeout(() => {
-          messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-        }, 50);
-      }
+      if (message.chatId === selectedChatId)
+        setTimeout(
+          () => messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' }),
+          50,
+        );
     };
 
     socket.on('new_message', handleNewMessage);
-    return () => socket.off('new_message', handleNewMessage);
+    return () => {
+      socket.off('new_message', handleNewMessage);
+    };
   }, [socket, selectedChatId]);
 
-  // 🧩 Listen for messages_read to update unread counts
+  // 🧩 Listen for messages_read
   useEffect(() => {
     if (!socket || !me) return;
 
@@ -163,14 +171,16 @@ export default function ChatPage() {
     };
 
     socket.on('messages_read', handleMessagesRead);
-    return () => socket.off('messages_read', handleMessagesRead);
+    return () => {
+      socket.off('messages_read', handleMessagesRead);
+    };
   }, [socket, me]);
 
   // ✅ Get receiver ID
   const getReceiverId = (chatId: string) => {
     const chat = chats.find((c) => c.id === chatId);
     if (!chat || !me) return '';
-    return chat.participants.find((p) => p.id !== me.id)?.id || '';
+    return chat.participants?.find?.((p) => p.id !== me.id)?.id || '';
   };
 
   // 🧩 Send message
@@ -182,6 +192,60 @@ export default function ChatPage() {
     setMessageInput('');
   };
 
+  // 🔍 Search users
+  useEffect(() => {
+    const delayDebounce = setTimeout(async () => {
+      if (!searchTerm.trim()) {
+        setSearchResults([]);
+        return;
+      }
+      setSearching(true);
+      try {
+        const res = await apiClient.get(`/user/search?query=${searchTerm}`, {
+          withCredentials: true,
+        });
+        setSearchResults(res.data.data);
+      } catch (err) {
+        console.error('❌ User search failed', err);
+      } finally {
+        setSearching(false);
+      }
+    }, 300);
+
+    return () => clearTimeout(delayDebounce);
+  }, [searchTerm]);
+
+  // 🧩 Start chat with user
+  const handleStartChat = async (userId: string) => {
+    try {
+      // ✅ FIXED: use {} instead of null
+      const res = await apiClient.post(
+        `/chats/direct/${userId}`,
+        {},
+        {
+          withCredentials: true,
+        },
+      );
+      const chat = res.data;
+
+      setChats((prev) => {
+        const exists = prev.find((c) => c.id === chat.id);
+        return exists ? prev : [...prev, chat];
+      });
+
+      setSelectedChatId(chat.id);
+      setSearchTerm('');
+      setSearchResults([]);
+    } catch (err) {
+      console.error('❌ Failed to start chat', err);
+    }
+  };
+
+  const filteredChats = useMemo(() => {
+    if (searchTerm.trim()) return chats;
+    return chats;
+  }, [searchTerm, chats]);
+
   if (loadingChats)
     return <div className="p-6 text-white">Loading chats...</div>;
 
@@ -190,11 +254,45 @@ export default function ChatPage() {
       {/* 🟢 Chat List */}
       <div className="h-full overflow-y-auto border-r border-gray-700">
         <h2 className="p-4 text-lg font-bold text-white">Chats</h2>
-        {chats.length === 0 ? (
-          <div className="p-4 text-gray-400">No chats yet</div>
+
+        {/* 🔍 Search Bar */}
+        <div className="px-4 pb-3">
+          <input
+            type="text"
+            placeholder="Search users..."
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            className="w-full rounded bg-[#2e2f2f] px-3 py-2 text-sm text-white placeholder-gray-400 focus:outline-none"
+          />
+        </div>
+
+        {/* 🧩 Search Results */}
+        {searchTerm.trim() ? (
+          <div>
+            {searching ? (
+              <div className="p-4 text-gray-400">Searching...</div>
+            ) : searchResults.length === 0 ? (
+              <div className="p-4 text-gray-400">No users found</div>
+            ) : (
+              searchResults.map((user) => (
+                <div
+                  key={user.id}
+                  onClick={() => handleStartChat(user.id)}
+                  className="cursor-pointer p-4 transition hover:bg-[#2e2f2f]"
+                >
+                  <span className="font-semibold text-white">
+                    {user.firstName} {user.lastName}
+                  </span>
+                  <p className="text-sm text-gray-400">{user.email}</p>
+                </div>
+              ))
+            )}
+          </div>
         ) : (
-          chats.map((chat) => {
-            const receiver = chat.participants.find((p) => p.id !== me?.id);
+          filteredChats.map((chat) => {
+            const receiver = chat.participants?.find?.((p) => p.id !== me?.id);
+            if (!receiver) return null;
+
             return (
               <div
                 key={chat.id}
@@ -205,7 +303,7 @@ export default function ChatPage() {
               >
                 <div className="flex items-center justify-between">
                   <span className="font-semibold text-white">
-                    {receiver?.firstName} {receiver?.lastName}
+                    {receiver.firstName} {receiver.lastName}
                   </span>
                   {chat.unreadCount && chat.unreadCount > 0 && (
                     <span className="rounded-full bg-blue-500 px-2 py-1 text-xs text-white">
@@ -226,7 +324,7 @@ export default function ChatPage() {
       <div className="col-span-2 flex h-screen flex-col overflow-hidden">
         {!selectedChatId ? (
           <div className="flex flex-1 items-center justify-center text-gray-500">
-            Select a chat to start messaging
+            Select a chat or search for a user to start messaging
           </div>
         ) : (
           <>
@@ -242,9 +340,7 @@ export default function ChatPage() {
                   return (
                     <div
                       key={msg.id}
-                      className={`flex flex-col ${
-                        isMe ? 'items-end' : 'items-start'
-                      }`}
+                      className={`flex flex-col ${isMe ? 'items-end' : 'items-start'}`}
                     >
                       <span className="mb-1 text-xs text-gray-500">
                         {msg.sender.firstName} {msg.sender.lastName}
